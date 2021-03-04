@@ -1,0 +1,306 @@
+---
+title: "DS Sliced"
+output: html_document
+---
+
+```{r setup, include=F, echo=F, cache=F}
+knitr::opts_chunk$set(
+  include = TRUE,
+  echo = TRUE,
+  cache = FALSE,
+  eval = FALSE,
+  cache.lazy = FALSE,
+  fig.show = 'hide',
+  fig.align = 'center',
+  fig.width = 8,
+  fig.asp = 0.75,
+  fig.retina = 2,
+  warning = FALSE,
+  message = FALSE
+)
+```
+
+```{r}
+library(tidyverse)
+library(tidymodels)
+library(palmerpenguins)
+library(stacks)
+library(ggforce)
+data('penguins')
+```
+
+```{r}
+penguins %>% skimr::skim()
+```
+
+```{r}
+penguins_filt <- penguins %>% drop_na() %>% mutate(across(year, factor))
+penguins_filt %>% 
+  select(where(is.numeric)) %>% 
+  corrr::correlate()
+```
+
+```{r}
+col_y <- 'species'
+cols_x_fct <- c('island', 'sex')
+nms <- penguins %>% names()
+cols_x <- nms %>% setdiff(col_y)
+
+penguins_filt %>% 
+  # select(where(~is.character(.x) | is.factor(.x)))
+  # select(any_of(col_y), all_of(cols_x_fct))) %>% 
+  select(any_of(col_y), where(is.numeric)) %>% 
+  pivot_longer(
+    -all_of(col_y)
+  ) %>% 
+  ggplot() +
+  aes(x = value, fill = species) +
+  geom_density() +
+  theme_minimal() +
+  facet_wrap(~name, scales = 'free')
+```
+
+```{r}
+viz_facet <-
+  penguins_filt %>% 
+  ggplot(
+    aes(
+      x = .panel_x,
+      y = .panel_y,
+      fill = species,
+      colour = species
+    )
+  ) +
+  geom_point(
+    shape = 16,
+    size = 0.5,
+    position = 'auto'
+  ) +
+  geom_autodensity(
+    alpha = 0.3,
+    colour = NA,
+    position = 'identity'
+  ) +
+  # geom_smooth(aes(colour = NULL, fill = NULL)) +
+  facet_matrix(
+    # vars(all_vars()),
+    vars(all_of(cols_x)),
+    layer.diag = 2
+  ) +
+  theme_minimal() +
+  theme(
+    legend.position = 'top'
+  )
+viz_facet
+```
+
+```{r}
+# ggsave(viz_facet, filename = 'viz_facet.png', width = 8, height = 8)
+```
+
+```{r}
+set.seed(6669)
+
+split <- penguins_filt %>% initial_split(strata = species)
+df_trn <- split %>% training()
+df_tst <- split %>% testing()
+
+rec <-
+  recipe(species ~ ., data = df_trn) %>% 
+  step_rm(year, island) %>% 
+  step_nzv(all_predictors()) %>% 
+  step_zv(all_predictors()) %>% 
+  step_lincomb(all_numeric_predictors()) %>% 
+  step_normalize(all_numeric_predictors()) %>% 
+  step_other(all_nominal_predictors()) %>% 
+  step_dummy(all_nominal_predictors())
+rec
+
+rec_umap <-
+  recipe(island ~ ., data = df_trn) %>% 
+  step_rm(species) %>% 
+  step_nzv(all_predictors()) %>% 
+  step_zv(all_predictors()) %>% 
+  step_lincomb(all_numeric_predictors()) %>% 
+  step_normalize(all_numeric_predictors()) %>% 
+  step_other(all_nominal_predictors()) %>% 
+  step_dummy(all_nominal_predictors()) %>% 
+  step_normalize(all_predictors()) %>% 
+  embed::step_umap(all_numeric_predictors(), outcome = vars(island), num_comp = 2)
+rec_umap
+
+df_umap <- rec_umap %>% prep() %>% juice()
+df_umap %>% 
+  ggplot() +
+  aes(x = umap_1, y = umap_2, color = island) +
+  geom_point() +
+  theme_minimal()
+
+```
+
+```{r}
+rec %>% prep() %>% juice()
+```
+
+```{r}
+spec_knn <-
+  nearest_neighbor(
+    neighbors = tune(),
+    weight_func = tune()
+  ) %>% 
+  set_engine('kknn') %>% 
+  set_mode('classification')
+
+spec_rf <-
+  rand_forest(
+    mtry = tune(),
+    trees = tune()
+  ) %>% 
+  set_engine('ranger') %>% 
+  set_mode('classification')
+
+spec_glm <-
+  multinom_reg(
+    penalty = tune(),
+    mixture = tune()
+  ) %>% 
+  set_engine('glmnet') %>% 
+  set_mode('classification')
+
+wf_knn <-
+  workflow() %>% 
+  add_model(spec_knn) %>% 
+  add_recipe(rec)
+
+wf_rf <-
+  workflow() %>% 
+  add_model(spec_rf) %>% 
+  add_recipe(rec)
+
+wf_glm <-
+  workflow() %>% 
+  add_model(spec_glm) %>% 
+  add_recipe(rec)
+
+folds <- df_trn %>% vfold_cv(v = 5)
+
+params_knn <-
+  grid_latin_hypercube(
+    spec_knn %>% parameters(),
+    size = 5
+  )
+
+params_rf <-
+  grid_latin_hypercube(
+    finalize(mtry(), df_trn),
+    trees(),
+    size = 5
+  )
+
+params_glm <-
+  grid_latin_hypercube(
+    spec_glm %>% parameters(),
+    size = 5
+  )
+
+met_set <- metric_set(accuracy, mn_log_loss)
+ctrl_grid <- control_grid(verbose = TRUE, save_pred = TRUE, save_workflow = TRUE)
+res_knn <-
+  tune_grid(
+    wf_knn,
+    grid = params_knn,
+    control = ctrl_grid,
+    resamples = folds,
+    metrics = met_set
+  )
+res_knn
+res_knn %>% collect_predictions()
+res_knn %>% collect_metrics()
+res_knn %>% collect_metrics(summarize = FALSE)
+best_knn <- res_knn %>% select_best('mn_log_loss')
+wf_knn_final <- wf_knn %>% finalize_workflow(best_knn)
+wf_knn_final
+fit_knn_final <- wf_knn_final %>% fit(data = df_trn)
+fit_knn_final
+fit_knn_final %>% 
+  predict(new_data = df_tst, type = 'prob') %>% 
+  bind_cols(df_tst %>% select(species)) %>% 
+  roc_auc(truth = species, matches('^[.]pred'))
+
+res_glm <-
+  tune_grid(
+    wf_glm,
+    grid = params_glm,
+    control = ctrl_grid,
+    resamples = folds,
+    metrics = met_set
+  )
+res_glm %>% select_best('mn_log_loss')
+
+res_rf <-
+  tune_grid(
+    wf_rf,
+    grid = params_rf,
+    control = ctrl_grid,
+    resamples = folds,
+    metrics = met_set
+  )
+res_rf
+
+```
+
+```{r}
+df_ens <-
+  stacks() %>% 
+  add_candidates(res_rf) %>% 
+  add_candidates(res_knn) %>% 
+  add_candidates(res_glm)
+df_ens
+
+fit_ens <-
+  df_ens %>% 
+  blend_predictions(metric = met_set) %>% 
+  fit_members()
+fit_ens
+
+fit_ens %>% autoplot()
+fit_ens %>% autoplot('members')
+fit_ens %>% collect_parameters('res_knn')
+
+df_tst %>% 
+  select(species) %>% 
+  bind_cols(predict(fit_ens, df_tst, type = 'class'))
+
+pred_ens <-
+  df_tst %>% 
+  bind_cols(predict(fit_ens, ., type = 'prob'))
+pred_ens
+pred_ens %>% 
+  roc_auc(
+    truth = species,
+    matches('^[.]pred_')
+  )
+
+```
+
+```{r}
+preds_members <-
+  df_tst %>% 
+  select(species) %>% 
+  bind_cols(
+    predict(
+      fit_ens,
+      df_tst,
+      type = 'class',
+      members = TRUE
+    )
+  )
+nms_members <- preds_members %>% colnames()
+
+setNames(nms_members, nms_members) %>% 
+  map_dfr(~mean(preds_members$species == pull(preds_members, .x))) %>% 
+  pivot_longer(
+    -species
+  )
+
+```
