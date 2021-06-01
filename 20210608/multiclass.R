@@ -59,7 +59,7 @@ rec_norm <-
   step_normalize(all_numeric_predictors())
 rec_norm
 
-f_set <- function(spec) {
+f_mode <- function(spec) {
   spec %>% 
     set_mode('classification')
 }
@@ -67,33 +67,33 @@ f_set <- function(spec) {
 library(workflowsets)
 spec_glmnet <- 
   multinom_reg(mixture = tune(), penalty = tune()) %>% 
-  f_set() %>% 
+  f_mode() %>% 
   set_engine('glmnet')
 spec_glmnet
 
 spec_rf <- 
   rand_forest(mtry = tune(), min_n = tune(), trees = 50) %>% 
-  f_set() %>% 
+  f_mode() %>% 
   set_engine('ranger')
 spec_rf
 
 # No `mixture` term with `multinom_reg` and "keras" engine.
 spec_nnet <- 
   multinom_reg(penalty = tune()) %>% 
-  f_set() %>% 
+  f_mode() %>% 
   set_engine('nnet')
 spec_keras
 
 # No `mixture` term with `multinom_reg` and "keras" engine.
 spec_keras <- 
   multinom_reg(penalty = tune()) %>% 
-  f_set() %>% 
+  f_mode() %>% 
   set_engine('keras', verbose = 0)
 spec_keras
 
 spec_mlp_keras <- 
   mlp(penalty = tune(), hidden_units = tune()) %>% 
-  f_set() %>% 
+  f_mode() %>% 
   set_engine('keras', verbose = 0)
 spec_mlp_keras
 
