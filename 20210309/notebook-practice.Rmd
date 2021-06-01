@@ -1,0 +1,175 @@
+---
+title: "What is Sliced, If Not Data Scientists Perservering?"
+output: html_document
+---
+
+```{r setup, include=F}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  # cache = TRUE,
+  message = FALSE,
+  warning = FALSE
+)
+```
+
+```{r}
+library(tidyverse)
+library(tidymodels)
+theme_set(theme_minimal(base_size = 14))
+dir <- '20210309'
+source(file.path(dir, 'helpers.R'))
+```
+
+```{r}
+# library(reticulate)
+# 
+# sklearn <- import('sklearn')
+# lr <- sklearn$linear_model$LinearRegression()
+# data('mtcars')
+# 
+# x <- mtcars[, -1]
+# y <- mtcars[, 1]
+# 
+# fit <- lr$fit(x, y)
+# preds <- fit$predict(x)
+# preds
+```
+
+```{r}
+paths <- fs::dir_ls(dir, regexp = 'csv$')
+df <- paths[3] %>% read_csv()
+df_holdout <- paths[4] %>% read_csv()
+locs <- paths[1] %>% read_csv() %>% select(-matches('([27]5p|min|max|median|sd)$'))
+revs <- paths[2] %>% read_csv() %>% select(-matches('([27]5p|min|max|median|sd)$'))
+df %>% skimr::skim()
+# df %>% count(brewery_country, sort = T) %>% count(n)
+```
+
+```{r}
+# df_all <-
+#   df %>%
+#   left_join(locs) %>%
+#   left_join(revs)
+# nms_chr <-
+#   df_all %>% 
+#   select(where(is.character)) %>% 
+#   names() %>% 
+#   setdiff(c('beer_category', 'beer_availability'))
+f_join <- function(data) {
+  data %>% 
+    select(
+      -any_of(sprintf('review_%s', c('aroma', 'appearance', 'palate', 'taste')))
+    ) %>% 
+    left_join(locs) %>% 
+    left_join(revs) %>% 
+    select(-any_of(c("brewery_city", "brewery_state", "brewery_country", "brewery_name", "review_profilename", "beer_style", "beer_name")))
+}
+
+df_all <- df %>% f_join()
+df_holdout_all <- df_holdout %>% f_join()
+
+rec <-
+  recipe(review_overall ~ ., data = df_all) %>% 
+  step_string2factor(beer_category, beer_availability) %>% 
+  step_other(beer_category, other = 0.5) %>% 
+  # step_impute_knn(all_numeric_predictors()) %>% 
+  step_dummy(all_nominal_predictors()) %>% 
+  step_impute_mean(all_numeric_predictors()) %>% 
+  step_nzv(all_numeric_predictors()) %>% 
+  step_lincomb(all_numeric_predictors())
+rec
+
+jui <-
+  rec %>% 
+  prep() %>% 
+  juice()
+jui %>% skimr::skim()
+
+f_fit <- function(f, engine, ..., file = engine, .rec = rec, overwrite = FALSE, path = file.path(dir, sprintf('%s.rds', file))) {
+  path_exists <- file.exists(path)
+  if(!overwrite & path_exists) {
+    return(read_rds(path))
+  }
+  spec <-
+    f() %>% 
+    set_mode('regression') %>% 
+    set_engine(engine)
+  wf <-
+    workflow() %>%
+    add_recipe(.rec) %>% 
+    add_model(spec)
+  wf
+  fit <- wf %>% fit(data = df_all)
+  write_rds(fit, path)
+  fit
+}
+
+f_predict <- function(fit, file = 'preds', path = file.path(dir, sprintf('%s.csv', file))) {
+  preds <-
+    fit %>% 
+    predict(new_data = df_holdout_all)
+  write_csv(preds, path)
+  preds
+}
+
+f_fit_timely <- timely(f_fit)
+fit_rf <- f_fit_timely(rand_forest, 'ranger', file = 'rf')
+preds_rf <- fit_rf %>% f_predict('preds_rf')
+preds_rf
+
+fit_lm <- f_fit_timely(linear_reg, 'lm', overwrite = TRUE)
+preds_lm <- fit_lm %>% f_predict('preds_lm')
+
+vi_lm <-
+  fit_lm %>% 
+  pull_workflow_fit() %>% 
+  vip::vi(method = 'shap', train = jui, pred_wrapper = predict) %>% 
+  janitor::clean_names()
+vi_lm
+
+viz_vi_lm <-
+  vi_lm %>% 
+  group_by(sign) %>%
+  slice_max(abs(importance), n = 20) %>%
+  ungroup() %>% 
+  ggplot() +
+  aes(x = Importance, y = Variable) +
+  geom_col(aes(fill = Sign)) +
+  facet_wrap(~Sign, scales = 'free_y')
+vi_lm
+  
+
+preds <-
+  list(
+    'rf' = preds_rf,
+    'lm' = preds_lm
+  ) %>% 
+  map_dfr(bind_rows, .id = 'fit') %>% 
+  group_by(fit) %>% 
+  mutate(idx = row_number()) %>%
+  ungroup()
+preds
+
+preds_wide <-
+  list(
+    'rf' = preds_rf,
+    'lm' = preds_lm
+  ) %>% 
+  reduce(bind_cols) %>% 
+  set_names(c('rf', 'lm')) %>% 
+  mutate(idx = row_number())
+preds_wide
+
+preds_wide %>% 
+  rmse(lm, rf)
+
+preds %>% 
+  rename(pred = .pred) %>% 
+  pivot_wider(-idx, names_from = fit, values_from = pred)
+
+preds %>% 
+  ggplot() +
+  aes(x = .pred, group = fit, fill = fit) +
+  geom_density(alpha = 0.3)
+
+```
