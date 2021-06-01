@@ -30,17 +30,17 @@ timely <- function(f, ..., .name = NULL) {
   }
 }
 
-hello <- function(...) {
-  'Hello world'
-}
-
-hello_timely <- timely(hello)
-hello_timely()
-
-dummy_function <- function(.data) {
-  # dat <- sys.frames()[[1]]$lhs
-  dat <- rev(as.character(sys.call()))[1]
-  print(dat)
-}
-mtcars %>% dummy_function()
-mtcars %>% group_by(gear) %>% summarize(n = n()) %>% dummy_function()
+# hello <- function(...) {
+#   'Hello world'
+# }
+# 
+# hello_timely <- timely(hello)
+# hello_timely()
+# 
+# dummy_function <- function(.data) {
+#   # dat <- sys.frames()[[1]]$lhs
+#   dat <- rev(as.character(sys.call()))[1]
+#   print(dat)
+# }
+# mtcars %>% dummy_function()
+# mtcars %>% group_by(gear) %>% summarize(n = n()) %>% dummy_function()
