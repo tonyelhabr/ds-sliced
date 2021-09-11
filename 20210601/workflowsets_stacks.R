@@ -6,7 +6,7 @@ theme_set_tony()
 
 dir_proj <- '20210601'
 f_read <- function(x) {
-  file.path(dir_proj, 'sliced-s01e01', sprintf('%s.csv', x)) %>%
+  file.path(dir_proj, sprintf('%s.csv', x)) %>%
     read_csv(
       col_types = cols(
         .default = col_character(),
